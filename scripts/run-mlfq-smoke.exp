@@ -1,0 +1,45 @@
+#!/usr/bin/expect -f
+
+if {$argc != 1} {
+  puts stderr "Usage: $argv0 <prepared-xv6-directory>"
+  exit 2
+}
+
+set timeout 180
+set xv6_directory [lindex $argv 0]
+set passed 0
+
+spawn make -C $xv6_directory qemu
+expect {
+  "init: starting sh" {}
+  timeout {
+    puts stderr "Timed out while waiting for the xv6 shell"
+    exit 1
+  }
+  eof {
+    puts stderr "QEMU exited before the xv6 shell started"
+    exit 1
+  }
+}
+
+send "mlfqtest\r"
+expect {
+  -re {MLFQ test complete: 4 children finished} {
+    set passed 1
+  }
+  timeout {
+    puts stderr "Timed out while waiting for mlfqtest"
+  }
+  eof {
+    puts stderr "QEMU exited before mlfqtest completed"
+  }
+}
+
+if {$passed} {
+  send "\001x"
+  expect eof
+  exit 0
+}
+
+exit 1
+

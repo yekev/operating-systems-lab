@@ -55,7 +55,7 @@ See each lab's README for its run commands and test strategy.
 
 - Both generated patches have been checked against their pinned upstream
   commits with `git apply --check`.
-- User-space builds and xv6 builds are defined in
+- User-space builds, xv6 builds, and QEMU runtime checks are defined in
   [the CI workflow](.github/workflows/ci.yml).
 - Runtime xv6 test evidence is recorded in
   [docs/verification.md](docs/verification.md); unverified results are marked
@@ -79,4 +79,3 @@ intentionally excluded.
 Original user-space code, documentation, and xv6 extensions are released under
 the [MIT License](LICENSE). Upstream xv6 attribution and the optional GPL kernel
 module exception are documented in [NOTICE.md](NOTICE.md).
-

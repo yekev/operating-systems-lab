@@ -28,8 +28,18 @@ jobs:
       - name: Install RISC-V toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install --yes gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu
+          sudo apt-get install --yes \
+            binutils-riscv64-linux-gnu \
+            expect \
+            gcc-riscv64-linux-gnu \
+            qemu-system-misc
       - name: Prepare patched xv6 tree
         run: ./scripts/prepare-xv6.sh "${{ matrix.lab }}"
       - name: Build xv6
         run: make -C "build/xv6-${{ matrix.lab }}"
+      - name: Run MLFQ smoke test in QEMU
+        if: matrix.lab == 'mlfq'
+        run: ./scripts/run-mlfq-smoke.exp build/xv6-mlfq
+      - name: Run mmap test suite in QEMU
+        if: matrix.lab == 'mmap'
+        run: make -C build/xv6-mmap grade
