@@ -1,5 +1,7 @@
 # Operating Systems Lab
 
+[![CI](https://github.com/yekev/operating-systems-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/yekev/operating-systems-lab/actions/workflows/ci.yml)
+
 A compact collection of operating-systems experiments spanning POSIX process
 control, Pthreads synchronization, kernel scheduling, and virtual memory.
 The two xv6 labs are distributed as small, reviewable patches against pinned
@@ -55,11 +57,10 @@ See each lab's README for its run commands and test strategy.
 
 - Both generated patches have been checked against their pinned upstream
   commits with `git apply --check`.
-- User-space builds, xv6 builds, and QEMU runtime checks are defined in
+- User-space builds, xv6 builds, and upstream QEMU runtime checks are defined in
   [the CI workflow](.github/workflows/ci.yml).
-- Runtime xv6 test evidence is recorded in
-  [docs/verification.md](docs/verification.md); unverified results are marked
-  explicitly rather than inferred from historic coursework screenshots.
+- Reproducible evidence and the exact scope of each check are recorded in
+  [docs/verification.md](docs/verification.md).
 
 ## Demo
 

@@ -29,8 +29,14 @@ make -C build/xv6-mmap qemu
 At the xv6 shell, run `mmaptest`. The upstream grading command is:
 
 ```bash
-make -C build/xv6-mmap grade
+cd build/xv6-mmap
+./grade-lab-mmap -v mmaptest
 ```
+
+The argument filters the official grader to its complete mmap-specific suite.
+The unfiltered course grader additionally requests private course-time metadata
+and runs the baseline's broader `usertests` collection; neither is part of this
+repository's mmap acceptance criteria.
 
 The patch targets the official `xv6-labs-2022` `mmap` branch commit
 `9cc6b8345397c1f06cc93ed3fbaa20709cb1984e`.
@@ -40,4 +46,3 @@ The patch targets the official `xv6-labs-2022` `mmap` branch commit
 This educational implementation does not provide arbitrary fixed addresses,
 middle-of-VMA splitting, page sharing between related processes, or a
 production-quality dirty-page tracker.
-

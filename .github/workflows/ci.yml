@@ -9,22 +9,23 @@ permissions:
 
 jobs:
   user-space:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and smoke-test process lab
         run: make -C labs/01-processes-and-signals smoke-test
       - name: Build Pthreads game
         run: make -C labs/02-pthreads-terminal-game
 
   xv6-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         lab: [mlfq, mmap]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install RISC-V toolchain
         run: |
           sudo apt-get update
@@ -40,6 +41,7 @@ jobs:
       - name: Run MLFQ smoke test in QEMU
         if: matrix.lab == 'mlfq'
         run: ./scripts/run-mlfq-smoke.exp build/xv6-mlfq
-      - name: Run mmap test suite in QEMU
+      - name: Run upstream mmap tests in QEMU
         if: matrix.lab == 'mmap'
-        run: make -C build/xv6-mmap grade
+        working-directory: build/xv6-mmap
+        run: ./grade-lab-mmap -v mmaptest
