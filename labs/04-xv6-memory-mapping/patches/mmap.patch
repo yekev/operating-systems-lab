@@ -1,0 +1,460 @@
+diff --git a/Makefile b/Makefile
+index 9b83591..5fc82e3 100644
+--- a/Makefile
++++ b/Makefile
+@@ -247,6 +247,10 @@ UPROGS += \
+ 	$U/_bigfile
+ endif
+ 
++ifeq ($(LAB),mmap)
++UPROGS += \
++	$U/_mmaptest
++endif
+ 
+ 
+ ifeq ($(LAB),net)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..ec48c63 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -8,6 +8,7 @@ struct spinlock;
+ struct sleeplock;
+ struct stat;
+ struct superblock;
++struct vma;
+ 
+ // bio.c
+ void            binit(void);
+@@ -100,6 +101,7 @@ void            scheduler(void) __attribute__((noreturn));
+ void            sched(void);
+ void            sleep(void*, struct spinlock*);
+ void            userinit(void);
++int             vma_unmap(struct proc*, struct vma*, uint64, uint64);
+ int             wait(uint64);
+ void            wakeup(void*);
+ void            yield(void);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..ecc20a8 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -5,6 +5,8 @@
+ #include "spinlock.h"
+ #include "proc.h"
+ #include "defs.h"
++#include "fcntl.h"
++#include "file.h"
+ 
+ struct cpu cpus[NCPU];
+ 
+@@ -124,6 +126,7 @@ allocproc(void)
+ found:
+   p->pid = allocpid();
+   p->state = USED;
++  memset(p->vmas, 0, sizeof(p->vmas));
+ 
+   // Allocate a trapframe page.
+   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+@@ -155,6 +158,13 @@ found:
+ static void
+ freeproc(struct proc *p)
+ {
++  for(int i = 0; i < NVMA; i++) {
++    if(p->vmas[i].used) {
++      fileclose(p->vmas[i].file);
++      memset(&p->vmas[i], 0, sizeof(p->vmas[i]));
++    }
++  }
++
+   if(p->trapframe)
+     kfree((void*)p->trapframe);
+   p->trapframe = 0;
+@@ -171,6 +181,73 @@ freeproc(struct proc *p)
+   p->state = UNUSED;
+ }
+ 
++static int
++writeback_vma(struct proc *p, struct vma *vma, uint64 addr, uint64 length)
++{
++  uint64 end = addr + length;
++  int result = 0;
++
++  if((vma->flags & MAP_SHARED) == 0 || (vma->prot & PROT_WRITE) == 0)
++    return 0;
++
++  for(uint64 va = addr; va < end; va += PGSIZE) {
++    pte_t *pte = walk(p->pagetable, va, 0);
++    if(pte == 0 || (*pte & PTE_V) == 0)
++      continue;
++
++    uint64 bytes = end - va;
++    if(bytes > PGSIZE)
++      bytes = PGSIZE;
++    uint64 file_offset = vma->offset + (va - vma->addr);
++
++    begin_op();
++    ilock(vma->file->ip);
++    int written = writei(vma->file->ip, 1, va, file_offset, bytes);
++    iunlock(vma->file->ip);
++    end_op();
++    if(written != (int)bytes)
++      result = -1;
++  }
++
++  return result;
++}
++
++// Unmap a complete VMA or a range at either edge of it.
++int
++vma_unmap(struct proc *p, struct vma *vma, uint64 addr, uint64 length)
++{
++  if(!vma->used || length == 0 || addr % PGSIZE != 0)
++    return -1;
++
++  uint64 vma_end = vma->addr + vma->length;
++  if(addr < vma->addr || addr >= vma_end || length > vma_end - addr)
++    return -1;
++
++  uint64 unmap_end = addr + length;
++  int at_start = addr == vma->addr;
++  int at_end = unmap_end == vma_end;
++  if(!at_start && !at_end)
++    return -1;
++  if(at_start && !at_end && length % PGSIZE != 0)
++    return -1;
++
++  int writeback_result = writeback_vma(p, vma, addr, length);
++  uvmunmap(p->pagetable, addr, PGROUNDUP(length) / PGSIZE, 1);
++
++  if(at_start && at_end) {
++    fileclose(vma->file);
++    memset(vma, 0, sizeof(*vma));
++  } else if(at_start) {
++    vma->addr += length;
++    vma->offset += length;
++    vma->length -= length;
++  } else {
++    vma->length = addr - vma->addr;
++  }
++
++  return writeback_result;
++}
++
+ // Create a user page table for a given process, with no user memory,
+ // but with trampoline and trapframe pages.
+ pagetable_t
+@@ -308,6 +385,13 @@ fork(void)
+       np->ofile[i] = filedup(p->ofile[i]);
+   np->cwd = idup(p->cwd);
+ 
++  for(i = 0; i < NVMA; i++) {
++    if(p->vmas[i].used) {
++      np->vmas[i] = p->vmas[i];
++      filedup(np->vmas[i].file);
++    }
++  }
++
+   safestrcpy(np->name, p->name, sizeof(p->name));
+ 
+   pid = np->pid;
+@@ -360,6 +444,11 @@ exit(int status)
+     }
+   }
+ 
++  for(int i = 0; i < NVMA; i++) {
++    if(p->vmas[i].used)
++      vma_unmap(p, &p->vmas[i], p->vmas[i].addr, p->vmas[i].length);
++  }
++
+   begin_op();
+   iput(p->cwd);
+   end_op();
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..2c012e4 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -81,6 +81,18 @@ struct trapframe {
+ 
+ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+ 
++#define NVMA 16
++
++struct vma {
++  int used;
++  uint64 addr;
++  uint64 length;
++  int prot;
++  int flags;
++  struct file *file;
++  uint64 offset;
++};
++
+ // Per-process state
+ struct proc {
+   struct spinlock lock;
+@@ -104,4 +116,5 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  struct vma vmas[NVMA];       // File-backed virtual-memory areas
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..4fb9baa 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_mmap(void);
++extern uint64 sys_munmap(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +128,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_mmap]    sys_mmap,
++[SYS_munmap]  sys_munmap,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..e7b18d6 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_mmap   22
++#define SYS_munmap 23
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+index 16b668c..c650b65 100644
+--- a/kernel/sysfile.c
++++ b/kernel/sysfile.c
+@@ -242,6 +242,86 @@ bad:
+   return -1;
+ }
+ 
++uint64
++sys_mmap(void)
++{
++  uint64 requested_addr;
++  int length;
++  int prot;
++  int flags;
++  int fd;
++  int offset;
++  struct file *file;
++  struct proc *p = myproc();
++
++  argaddr(0, &requested_addr);
++  argint(1, &length);
++  argint(2, &prot);
++  argint(3, &flags);
++  if(argfd(4, &fd, &file) < 0)
++    return -1;
++  argint(5, &offset);
++
++  if(requested_addr != 0 || length <= 0 || offset < 0 ||
++     offset % PGSIZE != 0)
++    return -1;
++  if((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0)
++    return -1;
++  if(flags != MAP_SHARED && flags != MAP_PRIVATE)
++    return -1;
++  if(file->type != FD_INODE || !file->readable)
++    return -1;
++  if((flags & MAP_SHARED) && (prot & PROT_WRITE) && !file->writable)
++    return -1;
++
++  struct vma *vma = 0;
++  for(int i = 0; i < NVMA; i++) {
++    if(!p->vmas[i].used) {
++      vma = &p->vmas[i];
++      break;
++    }
++  }
++  if(vma == 0)
++    return -1;
++
++  uint64 map_addr = PGROUNDUP(p->sz);
++  uint64 map_size = PGROUNDUP((uint64)length);
++  if(map_addr >= MAXVA || map_size > MAXVA - map_addr)
++    return -1;
++
++  vma->used = 1;
++  vma->addr = map_addr;
++  vma->length = length;
++  vma->prot = prot;
++  vma->flags = flags;
++  vma->file = filedup(file);
++  vma->offset = offset;
++  p->sz = map_addr + map_size;
++
++  return map_addr;
++}
++
++uint64
++sys_munmap(void)
++{
++  uint64 addr;
++  int length;
++  struct proc *p = myproc();
++
++  argaddr(0, &addr);
++  argint(1, &length);
++  if(length <= 0)
++    return -1;
++
++  for(int i = 0; i < NVMA; i++) {
++    struct vma *vma = &p->vmas[i];
++    if(vma->used && addr >= vma->addr && addr < vma->addr + vma->length)
++      return vma_unmap(p, vma, addr, length);
++  }
++
++  return -1;
++}
++
+ static struct inode*
+ create(char *path, short type, short major, short minor)
+ {
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..71c9f19 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -5,6 +5,8 @@
+ #include "spinlock.h"
+ #include "proc.h"
+ #include "defs.h"
++#include "fcntl.h"
++#include "file.h"
+ 
+ struct spinlock tickslock;
+ uint ticks;
+@@ -16,6 +18,66 @@ void kernelvec();
+ 
+ extern int devintr();
+ 
++static int
++handle_mmap_fault(struct proc *p, uint64 cause, uint64 fault_addr)
++{
++  struct vma *vma = 0;
++  for(int i = 0; i < NVMA; i++) {
++    if(p->vmas[i].used && fault_addr >= p->vmas[i].addr &&
++       fault_addr < p->vmas[i].addr + p->vmas[i].length) {
++      vma = &p->vmas[i];
++      break;
++    }
++  }
++  if(vma == 0)
++    return -1;
++
++  if((cause == 12 && (vma->prot & PROT_EXEC) == 0) ||
++     (cause == 13 && (vma->prot & PROT_READ) == 0) ||
++     (cause == 15 && (vma->prot & PROT_WRITE) == 0))
++    return -1;
++
++  uint64 page_addr = PGROUNDDOWN(fault_addr);
++  pte_t *existing = walk(p->pagetable, page_addr, 0);
++  if(existing != 0 && (*existing & PTE_V))
++    return -1;
++
++  char *memory = kalloc();
++  if(memory == 0)
++    return -1;
++  memset(memory, 0, PGSIZE);
++
++  uint64 page_offset = page_addr - vma->addr;
++  uint64 bytes_to_read = vma->length - page_offset;
++  if(bytes_to_read > PGSIZE)
++    bytes_to_read = PGSIZE;
++
++  ilock(vma->file->ip);
++  int bytes_read = readi(vma->file->ip, 0, (uint64)memory,
++                         vma->offset + page_offset, bytes_to_read);
++  iunlock(vma->file->ip);
++  if(bytes_read < 0) {
++    kfree(memory);
++    return -1;
++  }
++
++  int permissions = PTE_U;
++  if(vma->prot & (PROT_READ | PROT_WRITE))
++    permissions |= PTE_R;
++  if(vma->prot & PROT_WRITE)
++    permissions |= PTE_W;
++  if(vma->prot & PROT_EXEC)
++    permissions |= PTE_X;
++
++  if(mappages(p->pagetable, page_addr, PGSIZE,
++              (uint64)memory, permissions) < 0) {
++    kfree(memory);
++    return -1;
++  }
++
++  return 0;
++}
++
+ void
+ trapinit(void)
+ {
+@@ -67,6 +129,9 @@ usertrap(void)
+     syscall();
+   } else if((which_dev = devintr()) != 0){
+     // ok
++  } else if((r_scause() == 12 || r_scause() == 13 || r_scause() == 15) &&
++            handle_mmap_fault(p, r_scause(), r_stval()) == 0) {
++    // A file-backed page was allocated and mapped lazily.
+   } else {
+     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9f69783..09ee87f 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -178,9 +178,9 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+ 
+   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+     if((pte = walk(pagetable, a, 0)) == 0)
+-      panic("uvmunmap: walk");
++      continue;
+     if((*pte & PTE_V) == 0)
+-      panic("uvmunmap: not mapped");
++      continue;
+     if(PTE_FLAGS(*pte) == PTE_V)
+       panic("uvmunmap: not a leaf");
+     if(do_free){
+@@ -312,9 +312,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+ 
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walk(old, i, 0)) == 0)
+-      panic("uvmcopy: pte should exist");
++      continue;
+     if((*pte & PTE_V) == 0)
+-      panic("uvmcopy: page not present");
++      continue;
+     pa = PTE2PA(*pte);
+     flags = PTE_FLAGS(*pte);
+     if((mem = kalloc()) == 0)
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..d5d7619 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -39,3 +39,5 @@ void free(void*);
+ int atoi(const char*);
+ int memcmp(const void *, const void *, uint);
+ void *memcpy(void *, const void *, uint);
++void *mmap(void *, int, int, int, int, int);
++int munmap(void *, int);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..d23b9cc 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("mmap");
++entry("munmap");

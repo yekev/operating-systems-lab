@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="430" viewBox="0 0 1080 430" role="img" aria-labelledby="title description">
+  <title id="title">Three-level MLFQ scheduler</title>
+  <description id="description">New processes enter Q0, exhaust their slices into lower queues, retain priority across I/O sleep, and return to Q0 during a global boost.</description>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker>
+    <marker id="boostArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/></marker>
+  </defs>
+  <rect width="1080" height="430" rx="18" fill="#f8fafc"/>
+  <text x="48" y="54" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#0f172a">Three-level multi-level feedback queue</text>
+
+  <g font-family="Arial, sans-serif">
+    <rect x="55" y="112" width="245" height="112" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+    <text x="82" y="151" font-size="25" font-weight="700" fill="#1e3a8a">Q0 · highest</text>
+    <text x="82" y="184" font-size="17" fill="#1e40af">3-tick time slice</text>
+    <text x="82" y="208" font-size="14" fill="#475569">new and boosted processes</text>
+
+    <rect x="417" y="112" width="245" height="112" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+    <text x="444" y="151" font-size="25" font-weight="700" fill="#4c1d95">Q1 · medium</text>
+    <text x="444" y="184" font-size="17" fill="#6d28d9">6-tick time slice</text>
+    <text x="444" y="208" font-size="14" fill="#475569">one complete slice consumed</text>
+
+    <rect x="779" y="112" width="245" height="112" rx="14" fill="#fee2e2" stroke="#e11d48" stroke-width="2"/>
+    <text x="806" y="151" font-size="25" font-weight="700" fill="#881337">Q2 · lowest</text>
+    <text x="806" y="184" font-size="17" fill="#be123c">12-tick time slice</text>
+    <text x="806" y="208" font-size="14" fill="#475569">round robin at lowest priority</text>
+
+    <text x="137" y="91" font-size="15" font-weight="700" fill="#2563eb">fork / allocation</text>
+    <path d="M177 96 V108" stroke="#2563eb" stroke-width="2.5" marker-end="url(#boostArrow)"/>
+
+    <path d="M305 168 H407" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="320" y="151" font-size="14" fill="#475569">slice exhausted</text>
+    <path d="M667 168 H769" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="682" y="151" font-size="14" fill="#475569">slice exhausted</text>
+
+    <rect x="366" y="292" width="348" height="76" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="392" y="324" font-size="19" font-weight="700" fill="#155e75">I/O sleep and wake-up</text>
+    <text x="392" y="350" font-size="15" fill="#475569">retain queue level and unused slice</text>
+
+    <path d="M177 229 C177 390, 900 408, 900 229" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#boostArrow)"/>
+    <text x="366" y="410" font-size="15" font-weight="700" fill="#1d4ed8">global boost every 100 ticks → Q0</text>
+    <path d="M540 224 V282" stroke="#0891b2" stroke-width="2.5" marker-end="url(#arrow)"/>
+  </g>
+</svg>
+

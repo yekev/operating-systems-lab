@@ -1,0 +1,338 @@
+diff --git a/Makefile b/Makefile
+index dde08b1..b2d0966 100644
+--- a/Makefile
++++ b/Makefile
+@@ -143,6 +143,7 @@ UPROGS=\
+ 	$U/_logstress\
+ 	$U/_forphan\
+ 	$U/_dorphan\
++	$U/_mlfqtest\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 22a5401..ae4a1bc 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -10,6 +10,56 @@ struct cpu cpus[NCPU];
+ 
+ struct proc proc[NPROC];
+ 
++
++#define MLFQ_LEVELS 3
++#define PROMOTION_INTERVAL 100
++
++static const int time_slices[MLFQ_LEVELS] = {3, 6, 12};
++static struct spinlock mlfq_lock;
++static int last_scheduled[MLFQ_LEVELS] = {-1, -1, -1};
++static uint64 last_promotion_tick;
++
++extern uint ticks;
++
++static int
++time_slice_for(int queue_level)
++{
++  if(queue_level < 0 || queue_level >= MLFQ_LEVELS)
++    return time_slices[MLFQ_LEVELS - 1];
++  return time_slices[queue_level];
++}
++
++static uint64
++current_ticks(void)
++{
++  uint64 now;
++
++  acquire(&tickslock);
++  now = ticks;
++  release(&tickslock);
++  return now;
++}
++
++static void
++promote_processes(void)
++{
++  struct proc *p;
++
++  for(p = proc; p < &proc[NPROC]; p++) {
++    acquire(&p->lock);
++    if((p->state == RUNNABLE || p->state == RUNNING ||
++        p->state == SLEEPING) && p->queue_level > 0) {
++#ifdef MLFQ_DEBUG
++      printf("mlfq: promote pid %d from Q%d to Q0\n", p->pid, p->queue_level);
++#endif
++      p->queue_level = 0;
++      p->remaining_ticks = time_slice_for(0);
++    }
++    release(&p->lock);
++  }
++}
++
++
+ struct proc *initproc;
+ 
+ int nextpid = 1;
+@@ -33,7 +83,7 @@ void
+ proc_mapstacks(pagetable_t kpgtbl)
+ {
+   struct proc *p;
+-  
++
+   for(p = proc; p < &proc[NPROC]; p++) {
+     char *pa = kalloc();
+     if(pa == 0)
+@@ -49,6 +99,9 @@ procinit(void)
+ {
+   struct proc *p;
+   
++  initlock(&mlfq_lock, "mlfq");
++  last_promotion_tick = 0;
++
+   initlock(&pid_lock, "nextpid");
+   initlock(&wait_lock, "wait_lock");
+   for(p = proc; p < &proc[NPROC]; p++) {
+@@ -146,6 +199,10 @@ found:
+   p->context.ra = (uint64)forkret;
+   p->context.sp = p->kstack + PGSIZE;
+ 
++
++  p->queue_level = 0;
++  p->remaining_ticks = time_slice_for(0);
++
+   return p;
+ }
+ 
+@@ -414,54 +471,71 @@ kwait(uint64 addr)
+   }
+ }
+ 
++
++
++
+ // Per-CPU process scheduler.
+ // Each CPU calls scheduler() after setting itself up.
+-// Scheduler never returns.  It loops, doing:
+-//  - choose a process to run.
+-//  - swtch to start running that process.
+-//  - eventually that process transfers control
+-//    via swtch back to the scheduler.
++// Always choose the highest non-empty MLFQ level and use round-robin
++// selection among processes at the same level.
+ void
+ scheduler(void)
+ {
+   struct proc *p;
+   struct cpu *c = mycpu();
+-
+   c->proc = 0;
+-  for(;;){
+-    // The most recent process to run may have had interrupts
+-    // turned off; enable them to avoid a deadlock if all
+-    // processes are waiting. Then turn them back off
+-    // to avoid a possible race between an interrupt
+-    // and wfi.
++  for(;;) {
+     intr_on();
+     intr_off();
+ 
++    uint64 now = current_ticks();
++    int should_promote = 0;
++    acquire(&mlfq_lock);
++    if(now - last_promotion_tick >= PROMOTION_INTERVAL) {
++      last_promotion_tick = now;
++      should_promote = 1;
++    }
++    release(&mlfq_lock);
++    if(should_promote)
++      promote_processes();
++
+     int found = 0;
+-    for(p = proc; p < &proc[NPROC]; p++) {
+-      acquire(&p->lock);
+-      if(p->state == RUNNABLE) {
+-        // Switch to chosen process.  It is the process's job
+-        // to release its lock and then reacquire it
+-        // before jumping back to us.
+-        p->state = RUNNING;
+-        c->proc = p;
+-        swtch(&c->context, &p->context);
+-
+-        // Process is done running for now.
+-        // It should have changed its p->state before coming back.
+-        c->proc = 0;
+-        found = 1;
++    for(int queue = 0; queue < MLFQ_LEVELS; queue++) {
++      acquire(&mlfq_lock);
++      int start_idx = (last_scheduled[queue] + 1) % NPROC;
++      release(&mlfq_lock);
++
++      for(int offset = 0; offset < NPROC; offset++) {
++        int idx = (start_idx + offset) % NPROC;
++        p = &proc[idx];
++
++        acquire(&p->lock);
++        if(p->state == RUNNABLE && p->queue_level == queue) {
++          acquire(&mlfq_lock);
++          last_scheduled[queue] = idx;
++          release(&mlfq_lock);
++#ifdef MLFQ_DEBUG
++          printf("mlfq: schedule pid %d from Q%d\n", p->pid, queue);
++#endif
++          p->state = RUNNING;
++          c->proc = p;
++          swtch(&c->context, &p->context);
++          c->proc = 0;
++          found = 1;
++          release(&p->lock);
++          goto next_round;
++        }
++        release(&p->lock);
+       }
+-      release(&p->lock);
+     }
+-    if(found == 0) {
+-      // nothing to run; stop running on this core until an interrupt.
++
++  next_round:
++    if(!found)
+       asm volatile("wfi");
+-    }
+   }
+ }
+ 
++
+ // Switch to scheduler.  Must hold only p->lock
+ // and have changed proc->state. Saves and restores
+ // intena because intena is a property of this
+@@ -495,6 +569,21 @@ yield(void)
+ {
+   struct proc *p = myproc();
+   acquire(&p->lock);
++
++  if(p->state == RUNNING) {
++    p->remaining_ticks--;
++    if(p->remaining_ticks <= 0) {
++      if(p->queue_level < MLFQ_LEVELS - 1) {
++#ifdef MLFQ_DEBUG
++        printf("mlfq: demote pid %d from Q%d to Q%d\n",
++               p->pid, p->queue_level, p->queue_level + 1);
++#endif
++        p->queue_level++;
++      }
++      p->remaining_ticks = time_slice_for(p->queue_level);
++    }
++  }
++
+   p->state = RUNNABLE;
+   sched();
+   release(&p->lock);
+@@ -552,6 +641,7 @@ sleep(void *chan, struct spinlock *lk)
+   // so it's okay to release lk.
+ 
+   acquire(&p->lock);  //DOC: sleeplock1
++
+   release(lk);
+ 
+   // Go to sleep.
+@@ -579,6 +669,7 @@ wakeup(void *chan)
+     if(p != myproc()){
+       acquire(&p->lock);
+       if(p->state == SLEEPING && p->chan == chan) {
++
+         p->state = RUNNABLE;
+       }
+       release(&p->lock);
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..6de8e22 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,6 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  int queue_level;             // Current MLFQ level: 0 is highest priority
++  int remaining_ticks;         // Ticks left in this level's time slice
+ };
+diff --git a/user/mlfqtest.c b/user/mlfqtest.c
+new file mode 100644
+index 0000000..cd971b3
+--- /dev/null
++++ b/user/mlfqtest.c
+@@ -0,0 +1,78 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++static void
++busy_work(int iterations)
++{
++  volatile int value = 0;
++  for(int i = 0; i < iterations; i++)
++    value += i;
++}
++
++static void
++cpu_worker(int id, int rounds)
++{
++  printf("[cpu-%d] start pid=%d rounds=%d\n", id, getpid(), rounds);
++  for(int i = 0; i < rounds; i++)
++    busy_work(20000);
++  printf("[cpu-%d] complete pid=%d\n", id, getpid());
++  exit(0);
++}
++
++static void
++io_worker(int id, int rounds)
++{
++  printf("[io-%d] start pid=%d rounds=%d\n", id, getpid(), rounds);
++  for(int i = 0; i < rounds; i++) {
++    busy_work(1000);
++    pause(3);
++  }
++  printf("[io-%d] complete pid=%d\n", id, getpid());
++  exit(0);
++}
++
++int
++main(int argc, char *argv[])
++{
++  int stress = argc > 1 && strcmp(argv[1], "stress") == 0;
++  int cpu_rounds = stress ? 800 : 80;
++  int io_rounds = stress ? 100 : 12;
++  int children = 0;
++
++  printf("MLFQ mixed-workload test (%s mode)\n", stress ? "stress" : "fast");
++
++  int pid = fork();
++  if(pid == 0)
++    cpu_worker(1, cpu_rounds);
++  if(pid > 0)
++    children++;
++
++  pid = fork();
++  if(pid == 0)
++    io_worker(1, io_rounds);
++  if(pid > 0)
++    children++;
++
++  pid = fork();
++  if(pid == 0)
++    cpu_worker(2, cpu_rounds + cpu_rounds / 2);
++  if(pid > 0)
++    children++;
++
++  pid = fork();
++  if(pid == 0)
++    io_worker(2, io_rounds + io_rounds / 2);
++  if(pid > 0)
++    children++;
++
++  for(int completed = 0; completed < children; completed++) {
++    int status = 0;
++    int child = wait(&status);
++    printf("[parent] pid=%d status=%d (%d/%d)\n",
++           child, status, completed + 1, children);
++  }
++
++  printf("MLFQ test complete: %d children finished\n", children);
++  exit(children == 4 ? 0 : 1);
++}

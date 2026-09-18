@@ -1,0 +1,35 @@
+name: CI
+
+'on':
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  user-space:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and smoke-test process lab
+        run: make -C labs/01-processes-and-signals smoke-test
+      - name: Build Pthreads game
+        run: make -C labs/02-pthreads-terminal-game
+
+  xv6-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lab: [mlfq, mmap]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install RISC-V toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu
+      - name: Prepare patched xv6 tree
+        run: ./scripts/prepare-xv6.sh "${{ matrix.lab }}"
+      - name: Build xv6
+        run: make -C "build/xv6-${{ matrix.lab }}"

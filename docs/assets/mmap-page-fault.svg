@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="330" viewBox="0 0 1120 330" role="img" aria-labelledby="title description">
+  <title id="title">Lazy file-backed mmap page-fault flow</title>
+  <description id="description">The mmap system call records a VMA. A later access faults, validates permissions, allocates and fills one page, installs the page table entry, and writes shared mappings back at unmap.</description>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+  </defs>
+  <rect width="1120" height="330" rx="18" fill="#f8fafc"/>
+  <text x="44" y="52" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#0f172a">Lazy file-backed mapping lifecycle</text>
+  <g font-family="Arial, sans-serif">
+    <g fill="#eff6ff" stroke="#2563eb" stroke-width="2">
+      <rect x="40" y="105" width="165" height="104" rx="12"/>
+      <rect x="258" y="105" width="165" height="104" rx="12"/>
+      <rect x="476" y="105" width="165" height="104" rx="12"/>
+      <rect x="694" y="105" width="165" height="104" rx="12"/>
+      <rect x="912" y="105" width="165" height="104" rx="12"/>
+    </g>
+    <g fill="#0f172a" text-anchor="middle">
+      <text x="122" y="143" font-size="19" font-weight="700">mmap</text>
+      <text x="122" y="171" font-size="14">reserve VMA</text>
+      <text x="122" y="192" font-size="14">no page allocated</text>
+
+      <text x="340" y="143" font-size="19" font-weight="700">Page fault</text>
+      <text x="340" y="171" font-size="14">load · store · exec</text>
+      <text x="340" y="192" font-size="14">locate owning VMA</text>
+
+      <text x="558" y="143" font-size="19" font-weight="700">Validate</text>
+      <text x="558" y="171" font-size="14">range and protection</text>
+      <text x="558" y="192" font-size="14">allocate zeroed page</text>
+
+      <text x="776" y="143" font-size="19" font-weight="700">Populate</text>
+      <text x="776" y="171" font-size="14">read file region</text>
+      <text x="776" y="192" font-size="14">install PTE flags</text>
+
+      <text x="994" y="143" font-size="19" font-weight="700">munmap / exit</text>
+      <text x="994" y="171" font-size="14">shared write-back</text>
+      <text x="994" y="192" font-size="14">unmap and close</text>
+    </g>
+    <g stroke="#475569" stroke-width="3" marker-end="url(#arrow)">
+      <path d="M211 157 H248"/>
+      <path d="M429 157 H466"/>
+      <path d="M647 157 H684"/>
+      <path d="M865 157 H902"/>
+    </g>
+    <rect x="318" y="253" width="484" height="42" rx="10" fill="#ecfdf5" stroke="#059669"/>
+    <text x="560" y="280" text-anchor="middle" font-size="15" font-weight="700" fill="#065f46">Only faulted-in pages consume physical memory</text>
+  </g>
+</svg>
+
